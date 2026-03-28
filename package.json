@@ -1,0 +1,14 @@
+{
+  "name": "mic-to-db-record",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local microphone dBFS monitor with a time curve website and localhost TCP broadcast.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/app-server.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

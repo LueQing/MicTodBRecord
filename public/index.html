@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mic dB Record</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Local Mic Monitor</p>
+        <h1>默认麦克风 dB 时间曲线</h1>
+        <p class="lead">
+          监听浏览器默认麦克风，把输入换算为相对分贝 <code>dBFS</code>，
+          在网页上看趋势，同时把近 5 分钟最大值与平均值通过
+          <code>localhost TCP</code> 推送出去。
+        </p>
+
+        <div class="actions">
+          <button id="startButton" class="primary">开始监听</button>
+          <button id="stopButton" class="ghost" disabled>停止</button>
+        </div>
+
+        <div class="status-strip">
+          <span class="status-pill" id="micStatus">麦克风未启动</span>
+          <span class="status-pill" id="serverStatus">服务连接检测中</span>
+          <span class="status-pill">TCP: 127.0.0.1:7070</span>
+        </div>
+      </section>
+
+      <section class="stats-grid">
+        <article class="stat-card highlight">
+          <span class="stat-label">当前值</span>
+          <strong id="currentDb">--</strong>
+          <small>默认单位 dBFS</small>
+        </article>
+
+        <article class="stat-card">
+          <span class="stat-label">5 分钟最大值</span>
+          <strong id="maxDb">--</strong>
+          <small>由本地服务维护</small>
+        </article>
+
+        <article class="stat-card">
+          <span class="stat-label">5 分钟平均值</span>
+          <strong id="avgDb">--</strong>
+          <small>由本地服务维护</small>
+        </article>
+
+        <article class="stat-card">
+          <span class="stat-label">窗口样本数</span>
+          <strong id="sampleCount">0</strong>
+          <small id="updatedAt">等待第一笔样本</small>
+        </article>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-head">
+          <div>
+            <p class="panel-kicker">Timeline</p>
+            <h2>近 5 分钟分贝曲线</h2>
+          </div>
+          <p class="panel-note">
+            纵轴固定为 <code>-90</code> 到 <code>0 dBFS</code>，方便直接比较。
+          </p>
+        </div>
+        <canvas id="chart" aria-label="最近 5 分钟 dB 曲线"></canvas>
+      </section>
+
+      <section class="panel info-panel">
+        <div>
+          <p class="panel-kicker">Notes</p>
+          <h2>使用说明</h2>
+        </div>
+
+        <ul class="notes">
+          <li>浏览器会优先请求系统当前默认麦克风。</li>
+          <li>本页面展示的是未校准的相对分贝 <code>dBFS</code>，不是声级计意义上的 <code>dB SPL</code>。</li>
+          <li>TCP 客户端连接 <code>127.0.0.1:7070</code> 后，会收到按行分隔的 JSON 统计。</li>
+          <li>如果浏览器拒绝权限、麦克风静音或服务断开，页面会直接显示状态。</li>
+        </ul>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
