@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const http = require("http");
 const net = require("net");
 
@@ -44,10 +45,169 @@ function httpRequest({ body, method = "GET", path = "/", port }) {
   });
 }
 
+function createFakeSampleSourceFactory() {
+  const emitter = new EventEmitter();
+  let onSample;
+  let onStatus;
+
+  return {
+    emitSample(db, timestamp = Date.now()) {
+      onSample?.({ db, timestamp });
+    },
+    emitStatus(status) {
+      onStatus?.(status);
+    },
+    factory({ onSample: nextOnSample, onStatus: nextOnStatus }) {
+      onSample = nextOnSample;
+      onStatus = nextOnStatus;
+
+      return {
+        async start() {
+          emitter.emit("started");
+          onStatus?.({
+            deviceName: "Fake Mic",
+            message: "Sampling deterministic test data.",
+            state: "live",
+          });
+        },
+        async stop() {
+          emitter.emit("stopped");
+        },
+      };
+    },
+  };
+}
+
+function openEventStream({ path = "/api/live", port }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        headers: {
+          Accept: "text/event-stream",
+        },
+        host: "127.0.0.1",
+        method: "GET",
+        path,
+        port,
+      },
+      (response) => {
+        let buffer = "";
+        const seen = [];
+        const waiters = [];
+
+        function flushWaiters() {
+          for (const waiter of [...waiters]) {
+            const match = seen.find(
+              (event) =>
+                event.event === waiter.event &&
+                (waiter.predicate ? waiter.predicate(event) : true),
+            );
+
+            if (match) {
+              waiters.splice(waiters.indexOf(waiter), 1);
+              waiter.resolve(match);
+            }
+          }
+        }
+
+        function parseBlock(block) {
+          const lines = block
+            .split(/\r?\n/)
+            .filter((line) => line && !line.startsWith(":"));
+
+          if (lines.length === 0) {
+            return;
+          }
+
+          let eventName = "message";
+          const dataLines = [];
+
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice("event:".length).trim();
+              continue;
+            }
+
+            if (line.startsWith("data:")) {
+              dataLines.push(line.slice("data:".length).trim());
+            }
+          }
+
+          if (dataLines.length === 0) {
+            return;
+          }
+
+          seen.push({
+            data: JSON.parse(dataLines.join("\n")),
+            event: eventName,
+          });
+          flushWaiters();
+        }
+
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          buffer += chunk;
+
+          let separatorIndex = buffer.indexOf("\n\n");
+          while (separatorIndex !== -1) {
+            parseBlock(buffer.slice(0, separatorIndex));
+            buffer = buffer.slice(separatorIndex + 2);
+            separatorIndex = buffer.indexOf("\n\n");
+          }
+        });
+
+        resolve({
+          close() {
+            request.destroy();
+            response.destroy();
+          },
+          waitForEvent(event, predicate, timeoutMs = 1000) {
+            const existing = seen.find(
+              (seenEvent) =>
+                seenEvent.event === event &&
+                (predicate ? predicate(seenEvent) : true),
+            );
+
+            if (existing) {
+              return Promise.resolve(existing);
+            }
+
+            return new Promise((waitResolve, waitReject) => {
+              const timeout = setTimeout(() => {
+                const index = waiters.indexOf(waiter);
+                if (index >= 0) {
+                  waiters.splice(index, 1);
+                }
+                waitReject(new Error(`Timed out waiting for SSE event '${event}'`));
+              }, timeoutMs);
+
+              const waiter = {
+                event,
+                predicate,
+                resolve(match) {
+                  clearTimeout(timeout);
+                  waitResolve(match);
+                },
+              };
+
+              waiters.push(waiter);
+            });
+          },
+        });
+      },
+    );
+
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 async function main() {
+  const fakeSampleSource = createFakeSampleSourceFactory();
   const app = createDbMonitorApp({
     broadcastIntervalMs: 40,
     httpPort: 0,
+    sampleSourceFactory: fakeSampleSource.factory,
     tcpPort: 0,
     windowMs: 200,
   });
@@ -75,6 +235,9 @@ async function main() {
   });
 
   await wait(60);
+  const stream = await openEventStream({
+    port: ports.httpPort,
+  });
 
   const initialStats = await httpRequest({
     path: "/api/stats",
@@ -83,6 +246,7 @@ async function main() {
 
   assert.equal(initialStats.statusCode, 200);
   assert.equal(initialStats.body.stats.readingCount, 0);
+  assert.equal(initialStats.body.status.state, "live");
 
   const rootPage = await new Promise((resolve, reject) => {
     http
@@ -105,19 +269,32 @@ async function main() {
   assert.equal(rootPage.statusCode, 200);
   assert.match(rootPage.body, /默认麦克风 dB 时间曲线/);
 
-  await httpRequest({
+  const postDisabled = await httpRequest({
     body: { db: -30 },
     method: "POST",
     path: "/api/readings",
     port: ports.httpPort,
   });
 
-  await httpRequest({
-    body: { db: -10 },
-    method: "POST",
-    path: "/api/readings",
-    port: ports.httpPort,
-  });
+  assert.equal(postDisabled.statusCode, 410);
+  assert.match(postDisabled.body.error, /Browser uploads are disabled/);
+
+  const snapshot = await stream.waitForEvent("snapshot");
+
+  assert.equal(snapshot.data.stats.readingCount, 0);
+  assert.equal(snapshot.data.status.state, "live");
+  assert.equal(Array.isArray(snapshot.data.timeline), true);
+
+  fakeSampleSource.emitSample(-30);
+  fakeSampleSource.emitSample(-10);
+
+  const sampleEvent = await stream.waitForEvent(
+    "sample",
+    (event) => event.data.sample?.db === -10,
+  );
+
+  assert.equal(sampleEvent.data.stats.maxDb, -10);
+  assert.equal(sampleEvent.data.stats.avgDb, -20);
 
   const activeStats = await httpRequest({
     path: "/api/stats",
@@ -129,8 +306,6 @@ async function main() {
   assert.equal(activeStats.body.stats.maxDb, -10);
   assert.equal(activeStats.body.stats.avgDb, -20);
   assert.equal(activeStats.body.unit, "dBFS");
-
-  await wait(80);
 
   assert.ok(
     receivedMessages.some(
@@ -153,6 +328,7 @@ async function main() {
   assert.equal(expiredStats.body.stats.maxDb, null);
   assert.equal(expiredStats.body.stats.avgDb, null);
 
+  stream.close();
   client.destroy();
   await app.stop();
 
