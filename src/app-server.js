@@ -3,8 +3,11 @@ const http = require("http");
 const net = require("net");
 const path = require("path");
 
+const { createMicSource } = require("./mic-source");
+
 const DEFAULT_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_BROADCAST_INTERVAL_MS = 1000;
+const DEFAULT_SSE_HEARTBEAT_MS = 15000;
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -22,16 +25,26 @@ function createDbMonitorApp(options = {}) {
   const windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
   const broadcastIntervalMs =
     options.broadcastIntervalMs ?? DEFAULT_BROADCAST_INTERVAL_MS;
+  const sampleSourceFactory = options.sampleSourceFactory || createMicSource;
   const publicDir = path.resolve(
     options.publicDir || path.join(__dirname, "..", "public"),
   );
 
   const readings = [];
+  const sseClients = new Set();
   const tcpClients = new Set();
 
+  let captureSource;
+  let captureStatus = {
+    deviceName: null,
+    message: "Capture source has not started yet.",
+    state: "idle",
+    updatedAt: new Date().toISOString(),
+  };
   let httpServer;
   let tcpServer;
   let broadcastTimer;
+  let sseHeartbeatTimer;
 
   function json(response, statusCode, payload) {
     response.writeHead(statusCode, {
@@ -86,12 +99,53 @@ function createDbMonitorApp(options = {}) {
     return getStats(now);
   }
 
+  function getTimeline(now = Date.now()) {
+    pruneReadings(now);
+    return readings.map((reading) => ({
+      db: reading.db,
+      timestamp: reading.timestamp,
+    }));
+  }
+
   function getBroadcastPayload() {
     return {
       type: "stats",
       unit: "dBFS",
       ...getStats(),
     };
+  }
+
+  function getLiveStatusPayload() {
+    return {
+      stats: getStats(),
+      status: captureStatus,
+      unit: "dBFS",
+    };
+  }
+
+  function setCaptureStatus(status) {
+    captureStatus = {
+      deviceName: status.deviceName ?? null,
+      message: status.message ?? "",
+      state: status.state,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function writeSseEvent(response, eventName, payload) {
+    response.write(`event: ${eventName}\n`);
+    response.write(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+
+  function broadcastSse(eventName, payload) {
+    for (const response of [...sseClients]) {
+      if (response.destroyed || response.writableEnded) {
+        sseClients.delete(response);
+        continue;
+      }
+
+      writeSseEvent(response, eventName, payload);
+    }
   }
 
   function broadcastStats() {
@@ -114,6 +168,32 @@ function createDbMonitorApp(options = {}) {
         }
       });
     }
+  }
+
+  function broadcastCaptureStatus() {
+    broadcastSse("status", getLiveStatusPayload());
+  }
+
+  function handleCaptureStatus(status) {
+    setCaptureStatus(status);
+    broadcastCaptureStatus();
+  }
+
+  function handleCaptureSample(sample) {
+    const timestamp = sample.timestamp ?? Date.now();
+    const stats = addReading(sample.db, timestamp);
+    const payload = {
+      sample: {
+        db: sample.db,
+        timestamp,
+      },
+      stats,
+      status: captureStatus,
+      unit: "dBFS",
+    };
+
+    broadcastSse("sample", payload);
+    broadcastStats();
   }
 
   function parseJsonBody(request) {
@@ -150,40 +230,47 @@ function createDbMonitorApp(options = {}) {
     if (request.method === "GET" && request.url === "/api/stats") {
       json(response, 200, {
         ok: true,
-        unit: "dBFS",
         stats: getStats(),
+        status: captureStatus,
+        unit: "dBFS",
       });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/live") {
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        Connection: "keep-alive",
+        "Content-Type": "text/event-stream",
+      });
+      response.write(": connected\n\n");
+
+      sseClients.add(response);
+
+      writeSseEvent(response, "status", getLiveStatusPayload());
+      writeSseEvent(response, "snapshot", {
+        stats: getStats(),
+        status: captureStatus,
+        timeline: getTimeline(),
+        unit: "dBFS",
+      });
+
+      request.on("close", () => {
+        sseClients.delete(response);
+      });
+
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/readings") {
       try {
-        const body = await parseJsonBody(request);
-        const db = Number(body.db);
+        await parseJsonBody(request);
+      } catch {}
 
-        if (!Number.isFinite(db)) {
-          json(response, 400, {
-            ok: false,
-            error: "Field 'db' must be a finite number.",
-          });
-          return;
-        }
-
-        const stats = addReading(db);
-
-        json(response, 200, {
-          ok: true,
-          unit: "dBFS",
-          stats,
-        });
-
-        broadcastStats();
-      } catch (error) {
-        json(response, 400, {
-          ok: false,
-          error: error.message,
-        });
-      }
+      json(response, 410, {
+        ok: false,
+        error: "Browser uploads are disabled; backend capture is the only live source.",
+      });
 
       return;
     }
@@ -275,8 +362,37 @@ function createDbMonitorApp(options = {}) {
       throw error;
     }
 
+    setCaptureStatus({
+      state: "starting",
+      message: "Initializing capture source.",
+    });
+
+    try {
+      captureSource = sampleSourceFactory({
+        onSample: handleCaptureSample,
+        onStatus: handleCaptureStatus,
+      });
+      await captureSource?.start?.();
+    } catch (error) {
+      handleCaptureStatus({
+        state: "error",
+        message: error.message,
+      });
+    }
+
     broadcastTimer = setInterval(broadcastStats, broadcastIntervalMs);
     broadcastTimer.unref?.();
+    sseHeartbeatTimer = setInterval(() => {
+      for (const response of [...sseClients]) {
+        if (response.destroyed || response.writableEnded) {
+          sseClients.delete(response);
+          continue;
+        }
+
+        response.write(": keepalive\n\n");
+      }
+    }, DEFAULT_SSE_HEARTBEAT_MS);
+    sseHeartbeatTimer.unref?.();
 
     return getPorts();
   }
@@ -287,10 +403,25 @@ function createDbMonitorApp(options = {}) {
       broadcastTimer = undefined;
     }
 
+    if (sseHeartbeatTimer) {
+      clearInterval(sseHeartbeatTimer);
+      sseHeartbeatTimer = undefined;
+    }
+
+    if (captureSource?.stop) {
+      await captureSource.stop();
+      captureSource = undefined;
+    }
+
     for (const client of tcpClients) {
       client.destroy();
     }
     tcpClients.clear();
+
+    for (const response of sseClients) {
+      response.end();
+    }
+    sseClients.clear();
 
     const closeServer = (server) =>
       new Promise((resolve) => {
@@ -326,6 +457,7 @@ function createDbMonitorApp(options = {}) {
     addReading,
     getPorts,
     getStats,
+    getTimeline,
     start,
     stop,
   };
