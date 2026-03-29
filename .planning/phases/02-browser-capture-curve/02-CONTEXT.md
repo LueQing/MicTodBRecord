@@ -1,4 +1,4 @@
-# Phase 2: Browser Capture & Curve - Context
+# Phase 2: Backend Capture & Dashboard - Context
 
 **Gathered:** 2026-03-29
 **Status:** Ready for planning

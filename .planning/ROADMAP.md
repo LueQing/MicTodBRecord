@@ -9,7 +9,7 @@
 | Phase | Name | Goal | Requirements |
 |-------|------|------|--------------|
 | 1 | Local Runtime Foundation | 建立本地 HTTP/TCP 运行时与最小项目骨架 | TCP-01, TCP-02 |
-| 2 | Browser Capture & Curve | 从默认麦克风取样并在网页绘制分贝时间曲线 | AUD-01, AUD-02, AUD-03, VIS-01, VIS-02 |
+| 2 | Backend Capture & Dashboard | 让本地后端直接采样默认麦克风，并把实时曲线数据提供给浏览器展示 | AUD-01, AUD-02, AUD-03, VIS-01, VIS-02 |
 | 3 | Rolling Stats & Broadcast | 维护 5 分钟统计，并把结果展示到网页和 TCP | VIS-03, STAT-01, STAT-02, STAT-03, TCP-03 |
 
 ## Phase Details
@@ -25,25 +25,25 @@
 2. 本地服务可以提供 `/api/stats` 和 `/api/readings`
 3. TCP 客户端可以连接到固定 localhost 端口并保持连接
 
-### Phase 2: Browser Capture & Curve
+### Phase 2: Backend Capture & Dashboard
 
-**Goal:** 让浏览器默认麦克风的输入可以被采样、换算为 `dBFS`，并绘制近 5 分钟时间曲线。
+**Goal:** 让本地后端直接采样系统默认麦克风、换算为 `dBFS`，并向浏览器提供近 5 分钟时间曲线数据。
 
 **Requirements:** AUD-01, AUD-02, AUD-03, VIS-01, VIS-02
 
 **Success Criteria**
-1. 点击开始监听后，浏览器请求默认麦克风权限并开始采样
-2. 页面可显示当前分贝值与监听状态
-3. 图表在近 5 分钟窗口内持续滚动更新
+1. 启动服务后，后端直接开始使用系统默认录音设备采样
+2. 浏览器不再申请麦克风权限，只展示后端提供的当前值与状态
+3. 图表在近 5 分钟窗口内持续滚动更新，并由后端数据源驱动
 
 ### Phase 3: Rolling Stats & Broadcast
 
-**Goal:** 把浏览器采样结果汇总到本地服务，计算最近 5 分钟最大值与平均值，并同时回显到网页与 TCP 客户端。
+**Goal:** 把后端采样结果送入本地服务统计窗口，计算最近 5 分钟最大值与平均值，并同时回显到网页与 TCP 客户端。
 
 **Requirements:** VIS-03, STAT-01, STAT-02, STAT-03, TCP-03
 
 **Success Criteria**
-1. 浏览器持续将分贝读数发送到本地服务
+1. 后端采样链路持续将分贝读数送入本地服务
 2. 服务端可以返回当前窗口最大值、平均值与样本数
 3. TCP 客户端持续收到按行 JSON 的统计广播
 
@@ -67,11 +67,11 @@
 ## Status
 
 - Current milestone: MVP local prototype
-- Current focus: 使用真实麦克风做人工验收
+- Current focus: 执行 Phase 2 的后端采样重构
 - Phase 1 status: Complete
-- Phase 2 status: Complete
+- Phase 2 status: In Progress
 - Phase 3 status: Complete
-- Next recommended step: 本地启动并用真实麦克风做用户验收
+- Next recommended step: `$gsd-execute-phase 2`
 
 ---
-*Last updated: 2026-03-29 after MVP prototype implementation*
+*Last updated: 2026-03-29 after phase 2 backend-capture refactor kickoff*
