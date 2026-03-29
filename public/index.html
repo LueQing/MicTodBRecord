@@ -11,10 +11,10 @@
     <main class="shell">
       <section class="hero">
         <p class="eyebrow">Local Mic Monitor</p>
-        <h1>默认麦克风 dB 时间曲线</h1>
+        <h1>默认麦克风实时 dB 曲线</h1>
         <p class="lead">
           后端正在使用系统默认麦克风采样并换算成相对分贝
-          <code>dBFS</code>。浏览器只负责展示实时曲线、5 分钟统计和采样状态，
+          <code>dBFS</code>。浏览器只负责展示最近 10 秒实时曲线、5 分钟统计和采样状态，
           不会请求麦克风权限。
         </p>
 
@@ -73,13 +73,13 @@
         <div class="panel-head">
           <div>
             <p class="panel-kicker">Timeline</p>
-            <h2>最近 5 分钟分贝曲线</h2>
+            <h2>最近 10 秒实时分贝曲线</h2>
           </div>
           <p class="panel-note">
-            纵轴固定为 <code>-90</code> 到 <code>0 dBFS</code>，便于直接比较。
+            纵轴固定为 <code>-90</code> 到 <code>0 dBFS</code>，横轴展示最近 10 秒实时变化。
           </p>
         </div>
-        <canvas id="chart" aria-label="最近 5 分钟 dB 曲线"></canvas>
+        <canvas id="chart" aria-label="最近 10 秒实时 dB 曲线"></canvas>
       </section>
 
       <section class="panel info-panel">
@@ -90,7 +90,7 @@
 
         <ul class="notes">
           <li>页面不会请求浏览器麦克风权限，所有采样都由本地后端完成。</li>
-          <li>图表、当前值、最大值和平均值都来自同一条后端采样链路。</li>
+          <li>图表展示最近 10 秒实时变化，最大值和平均值仍然来自 5 分钟滚动窗口。</li>
           <li>如果默认麦克风不可用或后端采样失败，页面会直接显示不可用状态。</li>
           <li>这里展示的是未经校准的相对分贝 <code>dBFS</code>，不是物理声压级 <code>dB SPL</code>。</li>
         </ul>

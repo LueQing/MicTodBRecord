@@ -1,4 +1,6 @@
-const CHART_WINDOW_MS = 5 * 60 * 1000;
+const CHART_WINDOW_SECONDS = 10;
+const CHART_WINDOW_MS = CHART_WINDOW_SECONDS * 1000;
+const CHART_TICK_COUNT = 5;
 const MIN_DB = -90;
 const MAX_DB = 0;
 
@@ -15,7 +17,7 @@ const elements = {
 
 let eventSource;
 let timelinePoints = [];
-let chartEmptyMessage = "等待后端推送第一笔分贝数据。";
+let chartEmptyMessage = "等待后端推送第一笔实时分贝数据。";
 
 function formatDb(value) {
   return value == null ? "--" : `${value.toFixed(1)} dBFS`;
@@ -41,7 +43,7 @@ function updateCaptureStatus(status) {
   const message = status?.message || "";
 
   if (state === "live") {
-    chartEmptyMessage = "后端已连接默认麦克风，等待新的分贝样本。";
+    chartEmptyMessage = "后端已连接默认麦克风，等待新的实时分贝样本。";
     setPillState(elements.micStatus, `后端采样中${deviceName}`, "live");
     return;
   }
@@ -123,15 +125,17 @@ function drawChart() {
     context.fillText(`${db} dB`, 8, y + 4);
   }
 
-  for (let minute = 0; minute <= 5; minute += 1) {
-    const x = padding.left + (plotWidth / 5) * minute;
+  for (let tick = 0; tick <= CHART_TICK_COUNT; tick += 1) {
+    const x = padding.left + (plotWidth / CHART_TICK_COUNT) * tick;
     context.beginPath();
     context.moveTo(x, padding.top);
     context.lineTo(x, height - padding.bottom);
     context.stroke();
 
-    const minutesAgo = 5 - minute;
-    const label = minutesAgo === 0 ? "现在" : `${minutesAgo} 分钟前`;
+    const secondsAgo = Math.round(
+      CHART_WINDOW_SECONDS - (CHART_WINDOW_SECONDS / CHART_TICK_COUNT) * tick,
+    );
+    const label = secondsAgo === 0 ? "现在" : `${secondsAgo} 秒前`;
     context.fillText(label, x - 18, height - 8);
   }
 
