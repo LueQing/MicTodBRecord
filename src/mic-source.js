@@ -1,24 +1,53 @@
 const portAudio = require("naudiodon");
 
-function resolveDefaultInputDevice() {
-  const devices = portAudio
-    .getDevices()
-    .filter((device) => Number(device.maxInputChannels) > 0);
+function getPreferredHostApis(hostApis, platform = process.platform) {
+  const hostApiList = hostApis?.HostAPIs || [];
+  const defaultHost = hostApiList[Number(hostApis?.defaultHostAPI)];
+  const preferredNames = [];
 
-  if (devices.length === 0) {
+  if (platform === "win32") {
+    preferredNames.push("Windows WASAPI", "Windows WDM-KS");
+  }
+
+  if (defaultHost?.name) {
+    preferredNames.push(defaultHost.name);
+  }
+
+  return preferredNames
+    .map((name) => hostApiList.find((hostApi) => hostApi.name === name))
+    .filter(Boolean)
+    .filter((hostApi, index, list) => {
+      return list.findIndex((candidate) => candidate.id === hostApi.id) === index;
+    });
+}
+
+function resolveDefaultInputDevice({
+  devices = portAudio.getDevices(),
+  hostApis = portAudio.getHostAPIs(),
+  platform = process.platform,
+} = {}) {
+  const inputDevices = devices.filter(
+    (device) => Number(device.maxInputChannels) > 0,
+  );
+
+  if (inputDevices.length === 0) {
     return null;
   }
 
-  const hostApis = portAudio.getHostAPIs();
-  const defaultHostIndex = Number(hostApis.defaultHostAPI);
-  const defaultHost = hostApis.HostAPIs?.[defaultHostIndex];
-  const defaultInputId = Number(defaultHost?.defaultInput);
+  const preferredHostApis = getPreferredHostApis(hostApis, platform);
 
-  return (
-    devices.find((device) => device.id === defaultInputId) ||
-    devices.find((device) => device.id === -1) ||
-    devices[0]
-  );
+  for (const hostApi of preferredHostApis) {
+    const defaultInputId = Number(hostApi.defaultInput);
+    const matchedDevice = inputDevices.find(
+      (device) => device.id === defaultInputId,
+    );
+
+    if (matchedDevice) {
+      return matchedDevice;
+    }
+  }
+
+  return inputDevices.find((device) => device.id === -1) || inputDevices[0];
 }
 
 function toTimestampMs(buffer) {
@@ -149,4 +178,8 @@ function createMicSource({ onSample, onStatus }) {
 
 module.exports = {
   createMicSource,
+  __private: {
+    getPreferredHostApis,
+    resolveDefaultInputDevice,
+  },
 };

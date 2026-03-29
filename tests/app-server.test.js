@@ -267,7 +267,7 @@ async function main() {
   });
 
   assert.equal(rootPage.statusCode, 200);
-  assert.match(rootPage.body, /默认麦克风 dB 时间曲线/);
+  assert.match(rootPage.body, /浏览器只负责展示/);
 
   const postDisabled = await httpRequest({
     body: { db: -30 },
