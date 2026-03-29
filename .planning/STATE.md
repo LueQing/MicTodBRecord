@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: unknown
+last_updated: "2026-03-29T03:11:17.038Z"
+progress:
+  total_phases: 3
+  completed_phases: 0
+  total_plans: 3
+  completed_plans: 0
+---
+
 # State: Mic dB Record
 
 ## Project Reference
@@ -5,7 +18,7 @@
 See: `.planning/PROJECT.md` (updated 2026-03-29)
 
 **Core value:** 用户在本机打开页面并授权默认麦克风后，能稳定看到实时分贝时间曲线，并从本地 TCP 拿到最近 5 分钟的最大值和平均值。
-**Current focus:** Phase 2 已重新定向为“后端采样、浏览器纯展示”，等待 plan-phase 细化重构方案
+**Current focus:** Phase 02 — backend capture refactor in progress
 
 ## Milestone
 
@@ -19,7 +32,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-29)
 | Phase | Name | Status | Notes |
 |-------|------|--------|-------|
 | 1 | Local Runtime Foundation | Complete | 本地 HTTP/TCP 运行时与静态站点已实现 |
-| 2 | Browser Capture & Curve | Complete | 默认麦克风采样与 5 分钟曲线已实现 |
+| 2 | Backend Capture & Dashboard | In Progress | 正在把浏览器采样重构为后端默认麦克风采样 |
 | 3 | Rolling Stats & Broadcast | Complete | 服务端统计与 TCP 广播已实现 |
 
 ## Validation Notes
@@ -29,9 +42,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-29)
 
 ## Next
 
-- 评审 `.planning/phases/02-browser-capture-curve/02-CONTEXT.md`
-- 执行 `$gsd-plan-phase 2`
-- 规划如何把浏览器采样链路迁移到本地后端采样链路
+- 完成 wave 2：后端默认麦克风采样适配器与 `/api/live`
+- 完成 wave 3：浏览器被动展示页与人工验收
+- 等待 execute-phase 按新方案重构
 
 ---
-*Last updated: 2026-03-29 after phase 2 backend-capture discussion*
+*Last updated: 2026-03-29 after phase 2 execution started*
