@@ -1,5 +1,4 @@
 const CHART_WINDOW_MS = 5 * 60 * 1000;
-const SAMPLE_INTERVAL_MS = 250;
 const MIN_DB = -90;
 const MAX_DB = 0;
 
@@ -11,31 +10,15 @@ const elements = {
   micStatus: document.getElementById("micStatus"),
   sampleCount: document.getElementById("sampleCount"),
   serverStatus: document.getElementById("serverStatus"),
-  startButton: document.getElementById("startButton"),
-  stopButton: document.getElementById("stopButton"),
   updatedAt: document.getElementById("updatedAt"),
 };
 
-let analyser;
-let audioContext;
-let byteBuffer;
-let floatBuffer;
-let mediaStream;
-let mediaStreamSource;
-let postInFlight = false;
-let sampleTimer = null;
+let eventSource;
 let timelinePoints = [];
+let chartEmptyMessage = "等待后端推送第一笔分贝数据。";
 
 function formatDb(value) {
   return value == null ? "--" : `${value.toFixed(1)} dBFS`;
-}
-
-function setMicStatus(text) {
-  elements.micStatus.textContent = text;
-}
-
-function setServerStatus(text) {
-  elements.serverStatus.textContent = text;
 }
 
 function pruneTimeline(now = Date.now()) {
@@ -43,92 +26,57 @@ function pruneTimeline(now = Date.now()) {
   timelinePoints = timelinePoints.filter((point) => point.timestamp >= cutoff);
 }
 
-function updateServerStats(stats) {
-  elements.maxDb.textContent = formatDb(stats.maxDb);
-  elements.avgDb.textContent = formatDb(stats.avgDb);
-  elements.sampleCount.textContent = String(stats.readingCount ?? 0);
-  elements.updatedAt.textContent =
-    stats.readingCount > 0
-      ? `服务更新时间 ${new Date(stats.updatedAt).toLocaleTimeString()}`
-      : "等待第一笔样本";
+function setPillState(element, text, tone) {
+  element.textContent = text;
+  element.dataset.tone = tone;
 }
 
-async function refreshServerStats() {
-  try {
-    const response = await fetch("/api/stats", {
-      cache: "no-store",
-    });
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Stats request failed");
-    }
-
-    updateServerStats(payload.stats);
-    setServerStatus("服务已连接");
-  } catch (error) {
-    setServerStatus("服务不可达");
-  }
+function setServerStatus(text, tone = "neutral") {
+  setPillState(elements.serverStatus, text, tone);
 }
 
-async function sendReading(db) {
-  if (postInFlight) {
+function updateCaptureStatus(status) {
+  const state = status?.state || "idle";
+  const deviceName = status?.deviceName ? ` (${status.deviceName})` : "";
+  const message = status?.message || "";
+
+  if (state === "live") {
+    chartEmptyMessage = "后端已连接默认麦克风，等待新的分贝样本。";
+    setPillState(elements.micStatus, `后端采样中${deviceName}`, "live");
     return;
   }
 
-  postInFlight = true;
-
-  try {
-    const response = await fetch("/api/readings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ db }),
-    });
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Upload failed");
-    }
-
-    updateServerStats(payload.stats);
-    setServerStatus("服务已连接");
-  } catch (error) {
-    setServerStatus("服务写入失败");
-  } finally {
-    postInFlight = false;
+  if (state === "starting") {
+    chartEmptyMessage = "后端正在初始化默认麦克风。";
+    setPillState(elements.micStatus, "后端正在启动采样", "pending");
+    return;
   }
+
+  if (state === "unavailable") {
+    chartEmptyMessage = message || "后端没有可用的默认麦克风。";
+    setPillState(elements.micStatus, "默认麦克风不可用", "warn");
+    return;
+  }
+
+  if (state === "error") {
+    chartEmptyMessage = message || "后端采样失败。";
+    setPillState(elements.micStatus, "后端采样错误", "error");
+    return;
+  }
+
+  chartEmptyMessage = "等待后端启动默认麦克风。";
+  setPillState(elements.micStatus, "等待后端采样", "neutral");
 }
 
-function computeDecibels() {
-  if (!analyser) {
-    return null;
-  }
-
-  let rms = 0;
-
-  if (typeof analyser.getFloatTimeDomainData === "function") {
-    analyser.getFloatTimeDomainData(floatBuffer);
-
-    let sum = 0;
-    for (const sample of floatBuffer) {
-      sum += sample * sample;
-    }
-    rms = Math.sqrt(sum / floatBuffer.length);
-  } else {
-    analyser.getByteTimeDomainData(byteBuffer);
-
-    let sum = 0;
-    for (const sample of byteBuffer) {
-      const normalized = (sample - 128) / 128;
-      sum += normalized * normalized;
-    }
-    rms = Math.sqrt(sum / byteBuffer.length);
-  }
-
-  const db = 20 * Math.log10(Math.max(rms, 1e-6));
-  return Math.max(MIN_DB, Math.min(MAX_DB, db));
+function updateStats(stats) {
+  elements.currentDb.textContent = formatDb(stats?.lastDb ?? null);
+  elements.maxDb.textContent = formatDb(stats?.maxDb ?? null);
+  elements.avgDb.textContent = formatDb(stats?.avgDb ?? null);
+  elements.sampleCount.textContent = String(stats?.readingCount ?? 0);
+  elements.updatedAt.textContent =
+    stats?.readingCount > 0
+      ? `服务端更新时间 ${new Date(stats.updatedAt).toLocaleTimeString()}`
+      : "等待后端样本";
 }
 
 function syncCanvasSize() {
@@ -190,7 +138,7 @@ function drawChart() {
   if (timelinePoints.length === 0) {
     context.fillStyle = "rgba(103, 89, 71, 0.9)";
     context.font = '16px "IBM Plex Sans", sans-serif';
-    context.fillText("开始监听后，这里会出现分贝曲线。", padding.left, height / 2);
+    context.fillText(chartEmptyMessage, padding.left, height / 2);
     return;
   }
 
@@ -230,104 +178,83 @@ function drawChart() {
   context.stroke();
 }
 
-function sampleReading() {
-  const db = computeDecibels();
-
-  if (db == null) {
-    return;
-  }
-
-  const now = Date.now();
-  timelinePoints.push({ timestamp: now, db });
-  pruneTimeline(now);
-
-  elements.currentDb.textContent = formatDb(db);
+function applySnapshot(payload) {
+  const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
+  timelinePoints = timeline.map((point) => ({
+    db: point.db,
+    timestamp: point.timestamp,
+  }));
+  pruneTimeline();
+  updateStats(payload.stats || {});
+  updateCaptureStatus(payload.status);
   drawChart();
-  void sendReading(db);
 }
 
-async function startMonitoring() {
-  elements.startButton.disabled = true;
-
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        autoGainControl: false,
-        echoCancellation: false,
-        noiseSuppression: false,
-      },
+function applySample(payload) {
+  if (payload.sample) {
+    timelinePoints.push({
+      db: payload.sample.db,
+      timestamp: payload.sample.timestamp,
     });
-
-    audioContext = new window.AudioContext();
-    await audioContext.resume();
-
-    mediaStreamSource = audioContext.createMediaStreamSource(mediaStream);
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.82;
-
-    mediaStreamSource.connect(analyser);
-
-    floatBuffer = new Float32Array(analyser.fftSize);
-    byteBuffer = new Uint8Array(analyser.fftSize);
-
-    sampleTimer = window.setInterval(sampleReading, SAMPLE_INTERVAL_MS);
-
-    setMicStatus("麦克风监听中");
-    elements.stopButton.disabled = false;
-    refreshServerStats();
-  } catch (error) {
-    console.error(error);
-    setMicStatus("麦克风权限失败或设备不可用");
-    elements.startButton.disabled = false;
   }
+
+  pruneTimeline();
+  updateStats(payload.stats || {});
+  updateCaptureStatus(payload.status);
+  drawChart();
 }
 
-async function stopMonitoring() {
-  if (sampleTimer) {
-    window.clearInterval(sampleTimer);
-    sampleTimer = null;
+function connectLiveStream() {
+  if (eventSource) {
+    eventSource.close();
   }
 
-  if (mediaStreamSource) {
-    mediaStreamSource.disconnect();
-    mediaStreamSource = undefined;
-  }
+  setServerStatus("正在连接实时流", "pending");
+  eventSource = new EventSource("/api/live");
 
-  if (analyser) {
-    analyser.disconnect?.();
-    analyser = undefined;
-  }
+  eventSource.onopen = () => {
+    setServerStatus("实时流已连接", "live");
+  };
 
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => track.stop());
-    mediaStream = undefined;
-  }
+  eventSource.onerror = () => {
+    setServerStatus("实时流断开，等待重连", "error");
+    chartEmptyMessage = timelinePoints.length
+      ? chartEmptyMessage
+      : "与后端的实时连接已断开，正在自动重连。";
+    drawChart();
+  };
 
-  if (audioContext) {
-    await audioContext.close();
-    audioContext = undefined;
-  }
+  eventSource.addEventListener("status", (event) => {
+    const payload = JSON.parse(event.data);
+    updateStats(payload.stats || {});
+    updateCaptureStatus(payload.status);
+    drawChart();
+  });
 
-  setMicStatus("麦克风已停止");
-  elements.startButton.disabled = false;
-  elements.stopButton.disabled = true;
+  eventSource.addEventListener("snapshot", (event) => {
+    const payload = JSON.parse(event.data);
+    applySnapshot(payload);
+  });
+
+  eventSource.addEventListener("sample", (event) => {
+    const payload = JSON.parse(event.data);
+    applySample(payload);
+  });
 }
-
-elements.startButton.addEventListener("click", () => {
-  void startMonitoring();
-});
-
-elements.stopButton.addEventListener("click", () => {
-  void stopMonitoring();
-});
 
 window.addEventListener("resize", drawChart);
 window.addEventListener("beforeunload", () => {
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => track.stop());
-  }
+  eventSource?.close();
 });
 
-refreshServerStats();
+setServerStatus("准备连接实时流", "pending");
+updateCaptureStatus({ state: "idle" });
+updateStats({
+  avgDb: null,
+  lastDb: null,
+  maxDb: null,
+  readingCount: 0,
+  updatedAt: new Date().toISOString(),
+});
 drawChart();
+connectLiveStream();
