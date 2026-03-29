@@ -5,7 +5,7 @@
 See: `.planning/PROJECT.md` (updated 2026-03-29)
 
 **Core value:** 用户在本机打开页面并授权默认麦克风后，能稳定看到实时分贝时间曲线，并从本地 TCP 拿到最近 5 分钟的最大值和平均值。
-**Current focus:** 使用真实麦克风做本地人工验收
+**Current focus:** Phase 2 已重新定向为“后端采样、浏览器纯展示”，等待 plan-phase 细化重构方案
 
 ## Milestone
 
@@ -29,9 +29,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-29)
 
 ## Next
 
-- 执行 `npm start`
-- 在浏览器中授权默认麦克风并观察曲线与统计
-- 如需下游消费，连接 `127.0.0.1:7070` 读取 JSON 行
+- 评审 `.planning/phases/02-browser-capture-curve/02-CONTEXT.md`
+- 执行 `$gsd-plan-phase 2`
+- 规划如何把浏览器采样链路迁移到本地后端采样链路
 
 ---
-*Last updated: 2026-03-29 after MVP prototype implementation*
+*Last updated: 2026-03-29 after phase 2 backend-capture discussion*
