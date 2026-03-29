@@ -13,20 +13,33 @@
         <p class="eyebrow">Local Mic Monitor</p>
         <h1>默认麦克风 dB 时间曲线</h1>
         <p class="lead">
-          监听浏览器默认麦克风，把输入换算为相对分贝 <code>dBFS</code>，
-          在网页上看趋势，同时把近 5 分钟最大值与平均值通过
-          <code>localhost TCP</code> 推送出去。
+          后端正在使用系统默认麦克风采样并换算成相对分贝
+          <code>dBFS</code>。浏览器只负责展示实时曲线、5 分钟统计和采样状态，
+          不会请求麦克风权限。
         </p>
 
-        <div class="actions">
-          <button id="startButton" class="primary">开始监听</button>
-          <button id="stopButton" class="ghost" disabled>停止</button>
+        <div class="hero-meta">
+          <div class="meta-card">
+            <span class="meta-label">采样来源</span>
+            <strong>本地 Node 后端</strong>
+            <small>默认录音设备</small>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">展示方式</span>
+            <strong>被动仪表盘</strong>
+            <small>SSE 实时推送</small>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">广播地址</span>
+            <strong>127.0.0.1:7070</strong>
+            <small>5 分钟 max / avg</small>
+          </div>
         </div>
 
         <div class="status-strip">
-          <span class="status-pill" id="micStatus">麦克风未启动</span>
-          <span class="status-pill" id="serverStatus">服务连接检测中</span>
-          <span class="status-pill">TCP: 127.0.0.1:7070</span>
+          <span class="status-pill" id="micStatus" data-tone="neutral">等待后端采样</span>
+          <span class="status-pill" id="serverStatus" data-tone="pending">准备连接实时流</span>
+          <span class="status-pill" data-tone="neutral">浏览器只负责展示</span>
         </div>
       </section>
 
@@ -34,25 +47,25 @@
         <article class="stat-card highlight">
           <span class="stat-label">当前值</span>
           <strong id="currentDb">--</strong>
-          <small>默认单位 dBFS</small>
+          <small>来自后端实时样本</small>
         </article>
 
         <article class="stat-card">
           <span class="stat-label">5 分钟最大值</span>
           <strong id="maxDb">--</strong>
-          <small>由本地服务维护</small>
+          <small>服务端滚动窗口</small>
         </article>
 
         <article class="stat-card">
           <span class="stat-label">5 分钟平均值</span>
           <strong id="avgDb">--</strong>
-          <small>由本地服务维护</small>
+          <small>服务端滚动窗口</small>
         </article>
 
         <article class="stat-card">
           <span class="stat-label">窗口样本数</span>
           <strong id="sampleCount">0</strong>
-          <small id="updatedAt">等待第一笔样本</small>
+          <small id="updatedAt">等待后端样本</small>
         </article>
       </section>
 
@@ -60,10 +73,10 @@
         <div class="panel-head">
           <div>
             <p class="panel-kicker">Timeline</p>
-            <h2>近 5 分钟分贝曲线</h2>
+            <h2>最近 5 分钟分贝曲线</h2>
           </div>
           <p class="panel-note">
-            纵轴固定为 <code>-90</code> 到 <code>0 dBFS</code>，方便直接比较。
+            纵轴固定为 <code>-90</code> 到 <code>0 dBFS</code>，便于直接比较。
           </p>
         </div>
         <canvas id="chart" aria-label="最近 5 分钟 dB 曲线"></canvas>
@@ -76,10 +89,10 @@
         </div>
 
         <ul class="notes">
-          <li>浏览器会优先请求系统当前默认麦克风。</li>
-          <li>本页面展示的是未校准的相对分贝 <code>dBFS</code>，不是声级计意义上的 <code>dB SPL</code>。</li>
-          <li>TCP 客户端连接 <code>127.0.0.1:7070</code> 后，会收到按行分隔的 JSON 统计。</li>
-          <li>如果浏览器拒绝权限、麦克风静音或服务断开，页面会直接显示状态。</li>
+          <li>页面不会请求浏览器麦克风权限，所有采样都由本地后端完成。</li>
+          <li>图表、当前值、最大值和平均值都来自同一条后端采样链路。</li>
+          <li>如果默认麦克风不可用或后端采样失败，页面会直接显示不可用状态。</li>
+          <li>这里展示的是未经校准的相对分贝 <code>dBFS</code>，不是物理声压级 <code>dB SPL</code>。</li>
         </ul>
       </section>
     </main>
