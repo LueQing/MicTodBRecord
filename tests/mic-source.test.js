@@ -84,8 +84,26 @@ function testFallbackUsesFirstInputDevice() {
   assert.equal(device.id, 15);
 }
 
+function testRelativeTimestampsAreMappedToWallClock() {
+  const toTimestampMs = __private.createTimestampMapper();
+  const first = toTimestampMs({ timestamp: 5105 });
+  const second = toTimestampMs({ timestamp: 5106.5 });
+
+  assert.ok(first > 1_700_000_000_000);
+  assert.equal(second - first, 1500);
+}
+
+function testEpochTimestampsPassThrough() {
+  const toTimestampMs = __private.createTimestampMapper();
+  const epochMs = 1_743_219_000_000;
+
+  assert.equal(toTimestampMs({ timestamp: epochMs / 1000 }), epochMs);
+}
+
 testWindowsPrefersWasapiOverMMe();
 testNonWindowsUsesDefaultHostApi();
 testFallbackUsesFirstInputDevice();
+testRelativeTimestampsAreMappedToWallClock();
+testEpochTimestampsPassThrough();
 
 console.log("Mic source tests passed.");

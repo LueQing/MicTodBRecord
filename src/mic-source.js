@@ -50,12 +50,31 @@ function resolveDefaultInputDevice({
   return inputDevices.find((device) => device.id === -1) || inputDevices[0];
 }
 
-function toTimestampMs(buffer) {
-  if (typeof buffer.timestamp === "number" && Number.isFinite(buffer.timestamp)) {
-    return Math.round(buffer.timestamp * 1000);
-  }
+function createTimestampMapper() {
+  let firstPortTimeMs = null;
+  let firstWallClockMs = null;
 
-  return Date.now();
+  return function toTimestampMs(buffer) {
+    if (
+      typeof buffer.timestamp !== "number" ||
+      !Number.isFinite(buffer.timestamp)
+    ) {
+      return Date.now();
+    }
+
+    const portTimeMs = Math.round(buffer.timestamp * 1000);
+
+    if (portTimeMs > 1_000_000_000_000) {
+      return portTimeMs;
+    }
+
+    if (firstPortTimeMs == null) {
+      firstPortTimeMs = portTimeMs;
+      firstWallClockMs = Date.now();
+    }
+
+    return firstWallClockMs + (portTimeMs - firstPortTimeMs);
+  };
 }
 
 function computeDbfsFrom16Bit(buffer) {
@@ -84,6 +103,7 @@ function computeDbfsFrom16Bit(buffer) {
 function createMicSource({ onSample, onStatus }) {
   let audioInput;
   let stopped = false;
+  const toTimestampMs = createTimestampMapper();
 
   function emitStatus(status) {
     onStatus?.({
@@ -179,6 +199,7 @@ function createMicSource({ onSample, onStatus }) {
 module.exports = {
   createMicSource,
   __private: {
+    createTimestampMapper,
     getPreferredHostApis,
     resolveDefaultInputDevice,
   },
