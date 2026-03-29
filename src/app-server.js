@@ -5,7 +5,8 @@ const path = require("path");
 
 const { createMicSource } = require("./mic-source");
 
-const DEFAULT_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_STATS_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_TIMELINE_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_BROADCAST_INTERVAL_MS = 1000;
 const DEFAULT_SSE_HEARTBEAT_MS = 15000;
 
@@ -22,7 +23,8 @@ function createDbMonitorApp(options = {}) {
   const host = options.host || "127.0.0.1";
   const requestedHttpPort = options.httpPort ?? 3000;
   const requestedTcpPort = options.tcpPort ?? 7070;
-  const windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
+  const statsWindowMs = options.windowMs ?? DEFAULT_STATS_WINDOW_MS;
+  const timelineWindowMs = options.timelineWindowMs ?? DEFAULT_TIMELINE_WINDOW_MS;
   const broadcastIntervalMs =
     options.broadcastIntervalMs ?? DEFAULT_BROADCAST_INTERVAL_MS;
   const sampleSourceFactory = options.sampleSourceFactory || createMicSource;
@@ -30,7 +32,8 @@ function createDbMonitorApp(options = {}) {
     options.publicDir || path.join(__dirname, "..", "public"),
   );
 
-  const readings = [];
+  const statsReadings = [];
+  const timelineReadings = [];
   const sseClients = new Set();
   const tcpClients = new Set();
 
@@ -54,20 +57,31 @@ function createDbMonitorApp(options = {}) {
     response.end(JSON.stringify(payload));
   }
 
-  function pruneReadings(now = Date.now()) {
-    const cutoff = now - windowMs;
+  function pruneStatsReadings(now = Date.now()) {
+    const cutoff = now - statsWindowMs;
 
-    while (readings.length > 0 && readings[0].timestamp < cutoff) {
-      readings.shift();
+    while (statsReadings.length > 0 && statsReadings[0].timestamp < cutoff) {
+      statsReadings.shift();
+    }
+  }
+
+  function pruneTimelineReadings(now = Date.now()) {
+    const cutoff = now - timelineWindowMs;
+
+    while (
+      timelineReadings.length > 0 &&
+      timelineReadings[0].timestamp < cutoff
+    ) {
+      timelineReadings.shift();
     }
   }
 
   function getStats(now = Date.now()) {
-    pruneReadings(now);
+    pruneStatsReadings(now);
 
-    if (readings.length === 0) {
+    if (statsReadings.length === 0) {
       return {
-        windowSeconds: Math.round(windowMs / 1000),
+        windowSeconds: Math.round(statsWindowMs / 1000),
         readingCount: 0,
         maxDb: null,
         avgDb: null,
@@ -79,29 +93,33 @@ function createDbMonitorApp(options = {}) {
     let sum = 0;
     let maxDb = Number.NEGATIVE_INFINITY;
 
-    for (const reading of readings) {
+    for (const reading of statsReadings) {
       sum += reading.db;
       maxDb = Math.max(maxDb, reading.db);
     }
 
     return {
-      windowSeconds: Math.round(windowMs / 1000),
-      readingCount: readings.length,
+      windowSeconds: Math.round(statsWindowMs / 1000),
+      readingCount: statsReadings.length,
       maxDb,
-      avgDb: sum / readings.length,
-      lastDb: readings[readings.length - 1].db,
+      avgDb: sum / statsReadings.length,
+      lastDb: statsReadings[statsReadings.length - 1].db,
       updatedAt: new Date(now).toISOString(),
     };
   }
 
   function addReading(db, now = Date.now()) {
-    readings.push({ db, timestamp: now });
+    const reading = { db, timestamp: now };
+    statsReadings.push(reading);
+    timelineReadings.push(reading);
+    pruneStatsReadings(now);
+    pruneTimelineReadings(now);
     return getStats(now);
   }
 
   function getTimeline(now = Date.now()) {
-    pruneReadings(now);
-    return readings.map((reading) => ({
+    pruneTimelineReadings(now);
+    return timelineReadings.map((reading) => ({
       db: reading.db,
       timestamp: reading.timestamp,
     }));
@@ -119,6 +137,7 @@ function createDbMonitorApp(options = {}) {
     return {
       stats: getStats(),
       status: captureStatus,
+      timelineWindowSeconds: Math.round(timelineWindowMs / 1000),
       unit: "dBFS",
     };
   }
@@ -189,6 +208,7 @@ function createDbMonitorApp(options = {}) {
       },
       stats,
       status: captureStatus,
+      timelineWindowSeconds: Math.round(timelineWindowMs / 1000),
       unit: "dBFS",
     };
 
@@ -252,6 +272,7 @@ function createDbMonitorApp(options = {}) {
         stats: getStats(),
         status: captureStatus,
         timeline: getTimeline(),
+        timelineWindowSeconds: Math.round(timelineWindowMs / 1000),
         unit: "dBFS",
       });
 

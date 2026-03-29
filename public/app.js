@@ -1,5 +1,4 @@
-const CHART_WINDOW_SECONDS = 10;
-const CHART_WINDOW_MS = CHART_WINDOW_SECONDS * 1000;
+const DEFAULT_CHART_WINDOW_SECONDS = 10 * 60;
 const CHART_TICK_COUNT = 5;
 const MIN_DB = -90;
 const MAX_DB = 0;
@@ -16,15 +15,29 @@ const elements = {
 };
 
 let eventSource;
+let chartWindowSeconds = DEFAULT_CHART_WINDOW_SECONDS;
 let timelinePoints = [];
-let chartEmptyMessage = "等待后端推送第一笔实时分贝数据。";
+let chartEmptyMessage = "等待后端推送第一笔分贝数据。";
 
 function formatDb(value) {
   return value == null ? "--" : `${value.toFixed(1)} dBFS`;
 }
 
+function getChartWindowMs() {
+  return chartWindowSeconds * 1000;
+}
+
+function formatTimeAgoLabel(secondsAgo) {
+  if (chartWindowSeconds >= 60) {
+    const minutesAgo = Math.round(secondsAgo / 60);
+    return minutesAgo === 0 ? "现在" : `${minutesAgo} 分钟前`;
+  }
+
+  return secondsAgo === 0 ? "现在" : `${secondsAgo} 秒前`;
+}
+
 function pruneTimeline(now = Date.now()) {
-  const cutoff = now - CHART_WINDOW_MS;
+  const cutoff = now - getChartWindowMs();
   timelinePoints = timelinePoints.filter((point) => point.timestamp >= cutoff);
 }
 
@@ -43,7 +56,7 @@ function updateCaptureStatus(status) {
   const message = status?.message || "";
 
   if (state === "live") {
-    chartEmptyMessage = "后端已连接默认麦克风，等待新的实时分贝样本。";
+    chartEmptyMessage = "后端已连接默认麦克风，等待新的分贝样本。";
     setPillState(elements.micStatus, `后端采样中${deviceName}`, "live");
     return;
   }
@@ -133,9 +146,9 @@ function drawChart() {
     context.stroke();
 
     const secondsAgo = Math.round(
-      CHART_WINDOW_SECONDS - (CHART_WINDOW_SECONDS / CHART_TICK_COUNT) * tick,
+      chartWindowSeconds - (chartWindowSeconds / CHART_TICK_COUNT) * tick,
     );
-    const label = secondsAgo === 0 ? "现在" : `${secondsAgo} 秒前`;
+    const label = formatTimeAgoLabel(secondsAgo);
     context.fillText(label, x - 18, height - 8);
   }
 
@@ -165,7 +178,8 @@ function drawChart() {
   timelinePoints.forEach((point, index) => {
     const x =
       padding.left +
-      ((point.timestamp - (now - CHART_WINDOW_MS)) / CHART_WINDOW_MS) * plotWidth;
+      ((point.timestamp - (now - getChartWindowMs())) / getChartWindowMs()) *
+        plotWidth;
     const clampedDb = Math.max(MIN_DB, Math.min(MAX_DB, point.db));
     const y =
       padding.top +
@@ -183,6 +197,10 @@ function drawChart() {
 }
 
 function applySnapshot(payload) {
+  if (Number.isFinite(payload.timelineWindowSeconds)) {
+    chartWindowSeconds = payload.timelineWindowSeconds;
+  }
+
   const timeline = Array.isArray(payload.timeline) ? payload.timeline : [];
   timelinePoints = timeline.map((point) => ({
     db: point.db,
@@ -195,6 +213,10 @@ function applySnapshot(payload) {
 }
 
 function applySample(payload) {
+  if (Number.isFinite(payload.timelineWindowSeconds)) {
+    chartWindowSeconds = payload.timelineWindowSeconds;
+  }
+
   if (payload.sample) {
     timelinePoints.push({
       db: payload.sample.db,

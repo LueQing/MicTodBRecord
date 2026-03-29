@@ -209,6 +209,7 @@ async function main() {
     httpPort: 0,
     sampleSourceFactory: fakeSampleSource.factory,
     tcpPort: 0,
+    timelineWindowMs: 1000,
     windowMs: 200,
   });
 
@@ -284,6 +285,7 @@ async function main() {
   assert.equal(snapshot.data.stats.readingCount, 0);
   assert.equal(snapshot.data.status.state, "live");
   assert.equal(Array.isArray(snapshot.data.timeline), true);
+  assert.equal(snapshot.data.timelineWindowSeconds, 1);
 
   fakeSampleSource.emitSample(-30);
   fakeSampleSource.emitSample(-10);
@@ -295,6 +297,7 @@ async function main() {
 
   assert.equal(sampleEvent.data.stats.maxDb, -10);
   assert.equal(sampleEvent.data.stats.avgDb, -20);
+  assert.equal(sampleEvent.data.timelineWindowSeconds, 1);
 
   const activeStats = await httpRequest({
     path: "/api/stats",
@@ -327,6 +330,10 @@ async function main() {
   assert.equal(expiredStats.body.stats.readingCount, 0);
   assert.equal(expiredStats.body.stats.maxDb, null);
   assert.equal(expiredStats.body.stats.avgDb, null);
+  assert.equal(app.getTimeline().length, 2);
+
+  await wait(820);
+  assert.equal(app.getTimeline().length, 0);
 
   stream.close();
   client.destroy();
