@@ -48,6 +48,35 @@ function httpRequest({ body, method = "GET", path = "/", port }) {
   });
 }
 
+function httpRawRequest({ method = "GET", path = "/", port }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: "127.0.0.1",
+        method,
+        path,
+        port,
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => {
+          chunks.push(chunk);
+        });
+        response.on("end", () => {
+          resolve({
+            body: Buffer.concat(chunks),
+            headers: response.headers,
+            statusCode: response.statusCode,
+          });
+        });
+      },
+    );
+
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 function createFakeSampleSourceFactory() {
   const emitter = new EventEmitter();
   let onSample;
@@ -371,7 +400,7 @@ async function testLoudCapturePersistence() {
   });
 
   try {
-    await app.start();
+    const ports = await app.start();
 
     const t0 = Date.now();
     const pcmChunk = Buffer.alloc(800, 0x7f);
@@ -391,6 +420,38 @@ async function testLoudCapturePersistence() {
     });
 
     await wait(80);
+
+    const latestCaptureResponse = await httpRequest({
+      path: "/api/captures/latest",
+      port: ports.httpPort,
+    });
+    assert.equal(latestCaptureResponse.statusCode, 200);
+    assert.equal(latestCaptureResponse.body.ok, true);
+    assert.equal(latestCaptureResponse.body.latest.unit, "dBFS");
+    assert.match(
+      latestCaptureResponse.body.latest.recordingFile,
+      /^\d{8}T\d{6}-\d{3}\.wav$/,
+    );
+
+    const heatmapResponse = await httpRequest({
+      path: "/api/captures/heatmap?threshold=-20",
+      port: ports.httpPort,
+    });
+    assert.equal(heatmapResponse.statusCode, 200);
+    assert.equal(heatmapResponse.body.ok, true);
+    assert.equal(heatmapResponse.body.thresholdDb, -20);
+    assert.ok(Array.isArray(heatmapResponse.body.days));
+    assert.equal(heatmapResponse.body.days.length, 1);
+    assert.equal(heatmapResponse.body.days[0].total, 1);
+
+    const recordingFileResponse = await httpRawRequest({
+      path: `/api/captures/recordings/${latestCaptureResponse.body.latest.recordingFile}`,
+      port: ports.httpPort,
+    });
+    assert.equal(recordingFileResponse.statusCode, 200);
+    assert.equal(recordingFileResponse.headers["content-type"], "audio/wav");
+    assert.ok(recordingFileResponse.body.length > 44);
+
     await app.stop();
 
     const recordingsDir = path.join(tmpRoot, "recordings");

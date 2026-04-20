@@ -43,6 +43,20 @@
         </div>
       </section>
 
+      <section class="panel capture-player-panel">
+        <div class="panel-head">
+          <div>
+            <p class="panel-kicker">Latest Capture</p>
+            <h2>最近高音量录音回放</h2>
+          </div>
+          <button class="action-button" id="playLatestCapture" type="button">
+            播放最近 capture record
+          </button>
+        </div>
+        <p class="panel-note" id="latestCaptureMeta">等待读取最近录音事件。</p>
+        <audio id="latestCaptureAudio" controls preload="none"></audio>
+      </section>
+
       <section class="stats-grid">
         <article class="stat-card highlight">
           <span class="stat-label">当前值</span>
@@ -80,6 +94,23 @@
           </p>
         </div>
         <canvas id="chart" aria-label="最近 10 分钟 dB 曲线"></canvas>
+      </section>
+
+      <section class="panel heatmap-panel">
+        <div class="panel-head">
+          <div>
+            <p class="panel-kicker">Hourly Heatmap</p>
+            <h2>按天统计每小时超出 -20 dBFS 的频率</h2>
+          </div>
+          <button class="action-button secondary" id="refreshHeatmap" type="button">
+            生成热力图
+          </button>
+        </div>
+        <p class="panel-note" id="heatmapSummary">等待加载热力图数据。</p>
+        <div class="heatmap-wrap">
+          <div class="heatmap-header" id="heatmapHours"></div>
+          <div class="heatmap-body" id="heatmapBody"></div>
+        </div>
       </section>
 
       <section class="panel info-panel">

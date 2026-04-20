@@ -12,6 +12,7 @@ const DEFAULT_SSE_HEARTBEAT_MS = 15000;
 const DEFAULT_LOUD_THRESHOLD_DB = -20;
 const DEFAULT_LOUD_CAPTURE_BUFFER_MS = 5000;
 const DEFAULT_LOUD_CAPTURE_SAMPLE_RATE = 44100;
+const HEATMAP_HOUR_COUNT = 24;
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -243,6 +244,182 @@ function createDbMonitorApp(options = {}) {
     response.end(JSON.stringify(payload));
   }
 
+  function sanitizeRecordingFileName(name) {
+    if (typeof name !== "string") {
+      return null;
+    }
+
+    const baseName = path.basename(name);
+    if (baseName !== name) {
+      return null;
+    }
+
+    if (!/^[A-Za-z0-9._-]+\.wav$/.test(baseName)) {
+      return null;
+    }
+
+    return baseName;
+  }
+
+  function createCaptureItem(logPayload) {
+    const recordingFile = sanitizeRecordingFileName(logPayload.recordingFile);
+    if (!recordingFile) {
+      return null;
+    }
+
+    const highVolumeAt = logPayload.highVolumeAt || logPayload.triggeredAt;
+    const highVolumeTimestamp = Date.parse(highVolumeAt);
+
+    if (!Number.isFinite(highVolumeTimestamp)) {
+      return null;
+    }
+
+    const segmentStartTimestamp = Date.parse(logPayload.segmentStartAt);
+    const segmentEndTimestamp = Date.parse(logPayload.segmentEndAt);
+    const durationSeconds =
+      Number.isFinite(segmentStartTimestamp) && Number.isFinite(segmentEndTimestamp)
+        ? Math.max(0, (segmentEndTimestamp - segmentStartTimestamp) / 1000)
+        : null;
+
+    return {
+      audioUrl: `/api/captures/recordings/${encodeURIComponent(recordingFile)}`,
+      durationSeconds,
+      eventId: logPayload.eventId || path.parse(logPayload.logFile || recordingFile).name,
+      highVolumeAt: new Date(highVolumeTimestamp).toISOString(),
+      highVolumeTimestamp,
+      peakDb: Number(logPayload.peakDb),
+      recordingFile,
+      thresholdDb: Number(logPayload.thresholdDb),
+      unit: logPayload.unit || "dBFS",
+    };
+  }
+
+  async function readCaptureLogs() {
+    try {
+      const entries = await fs.promises.readdir(loudCaptureLogsDir, {
+        withFileTypes: true,
+      });
+
+      const jsonEntries = entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .sort((a, b) => b.name.localeCompare(a.name));
+
+      const items = [];
+      for (const entry of jsonEntries) {
+        const absolutePath = path.join(loudCaptureLogsDir, entry.name);
+        const raw = await fs.promises.readFile(absolutePath, "utf8");
+        const parsed = JSON.parse(raw);
+        parsed.logFile = parsed.logFile || entry.name;
+        const item = createCaptureItem(parsed);
+        if (item) {
+          items.push(item);
+        }
+      }
+
+      return items;
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return [];
+      }
+
+      throw error;
+    }
+  }
+
+  async function sendRecordingFile(response, fileName) {
+    const safeFileName = sanitizeRecordingFileName(fileName);
+    if (!safeFileName) {
+      json(response, 400, {
+        ok: false,
+        error: "Invalid recording file name.",
+      });
+      return;
+    }
+
+    const absoluteFile = path.resolve(loudCaptureRecordingsDir, safeFileName);
+    if (!absoluteFile.startsWith(loudCaptureRecordingsDir)) {
+      json(response, 403, {
+        ok: false,
+        error: "Forbidden.",
+      });
+      return;
+    }
+
+    try {
+      const content = await fs.promises.readFile(absoluteFile);
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        "Content-Type": "audio/wav",
+      });
+      response.end(content);
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        json(response, 404, {
+          ok: false,
+          error: "Recording not found.",
+        });
+        return;
+      }
+
+      json(response, 500, {
+        ok: false,
+        error: "Failed to read recording file.",
+      });
+    }
+  }
+
+  async function sendLatestCapture(response) {
+    const logs = await readCaptureLogs();
+    const latest = logs[0] || null;
+
+    json(response, 200, {
+      latest,
+      ok: true,
+      unit: "dBFS",
+    });
+  }
+
+  async function sendCaptureHeatmap(response, thresholdDb) {
+    const logs = await readCaptureLogs();
+    const daysMap = new Map();
+    let maxCount = 0;
+
+    for (const item of logs) {
+      if (!Number.isFinite(item.peakDb) || item.peakDb <= thresholdDb) {
+        continue;
+      }
+
+      const eventDate = new Date(item.highVolumeTimestamp);
+      const dayKey = `${eventDate.getFullYear()}-${padInt(eventDate.getMonth() + 1, 2)}-${padInt(eventDate.getDate(), 2)}`;
+      const hour = eventDate.getHours();
+
+      let row = daysMap.get(dayKey);
+      if (!row) {
+        row = {
+          date: dayKey,
+          hours: Array.from({ length: HEATMAP_HOUR_COUNT }, () => 0),
+          total: 0,
+        };
+        daysMap.set(dayKey, row);
+      }
+
+      row.hours[hour] += 1;
+      row.total += 1;
+      maxCount = Math.max(maxCount, row.hours[hour]);
+    }
+
+    const days = [...daysMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+
+    json(response, 200, {
+      generatedAt: new Date().toISOString(),
+      maxCount,
+      ok: true,
+      thresholdDb,
+      unit: "dBFS",
+      days,
+    });
+  }
+
   function pruneStatsReadings(now = Date.now()) {
     const cutoff = now - statsWindowMs;
 
@@ -446,7 +623,10 @@ function createDbMonitorApp(options = {}) {
   }
 
   async function handleApi(request, response) {
-    if (request.method === "GET" && request.url === "/api/stats") {
+    const requestUrl = new URL(request.url || "/", `http://${host}`);
+    const { pathname } = requestUrl;
+
+    if (request.method === "GET" && pathname === "/api/stats") {
       json(response, 200, {
         loudCapture: getLoudCapturePayload(),
         ok: true,
@@ -457,7 +637,7 @@ function createDbMonitorApp(options = {}) {
       return;
     }
 
-    if (request.method === "GET" && request.url === "/api/live") {
+    if (request.method === "GET" && pathname === "/api/live") {
       response.writeHead(200, {
         "Cache-Control": "no-store",
         Connection: "keep-alive",
@@ -484,7 +664,7 @@ function createDbMonitorApp(options = {}) {
       return;
     }
 
-    if (request.method === "POST" && request.url === "/api/readings") {
+    if (request.method === "POST" && pathname === "/api/readings") {
       try {
         await parseJsonBody(request);
       } catch {}
@@ -494,6 +674,33 @@ function createDbMonitorApp(options = {}) {
         error: "Browser uploads are disabled; backend capture is the only live source.",
       });
 
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/captures/latest") {
+      await sendLatestCapture(response);
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/captures/heatmap") {
+      const thresholdDb = Number.parseFloat(
+        requestUrl.searchParams.get("threshold") || `${DEFAULT_LOUD_THRESHOLD_DB}`,
+      );
+      await sendCaptureHeatmap(
+        response,
+        Number.isFinite(thresholdDb) ? thresholdDb : DEFAULT_LOUD_THRESHOLD_DB,
+      );
+      return;
+    }
+
+    if (
+      request.method === "GET" &&
+      pathname.startsWith("/api/captures/recordings/")
+    ) {
+      const fileName = decodeURIComponent(
+        pathname.slice("/api/captures/recordings/".length),
+      );
+      await sendRecordingFile(response, fileName);
       return;
     }
 

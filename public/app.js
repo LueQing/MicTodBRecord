@@ -11,8 +11,15 @@ const elements = {
   captureThreshold: document.getElementById("captureThreshold"),
   chart: document.getElementById("chart"),
   currentDb: document.getElementById("currentDb"),
+  heatmapBody: document.getElementById("heatmapBody"),
+  heatmapHours: document.getElementById("heatmapHours"),
+  heatmapSummary: document.getElementById("heatmapSummary"),
+  latestCaptureAudio: document.getElementById("latestCaptureAudio"),
+  latestCaptureMeta: document.getElementById("latestCaptureMeta"),
   maxDb: document.getElementById("maxDb"),
   micStatus: document.getElementById("micStatus"),
+  playLatestCapture: document.getElementById("playLatestCapture"),
+  refreshHeatmap: document.getElementById("refreshHeatmap"),
   sampleCount: document.getElementById("sampleCount"),
   serverStatus: document.getElementById("serverStatus"),
   updatedAt: document.getElementById("updatedAt"),
@@ -22,6 +29,8 @@ let eventSource;
 let chartWindowSeconds = DEFAULT_CHART_WINDOW_SECONDS;
 let timelinePoints = [];
 let chartEmptyMessage = "等待后端推送第一笔分贝数据。";
+const HEATMAP_THRESHOLD_DB = -20;
+const HEATMAP_HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
 function formatDb(value) {
   return value == null ? "--" : `${value.toFixed(1)} dBFS`;
@@ -213,6 +222,132 @@ function drawChart() {
   context.stroke();
 }
 
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function formatCaptureMeta(capture) {
+  if (!capture) {
+    return "暂无可播放的 capture record。";
+  }
+
+  const timeText = new Date(capture.highVolumeAt).toLocaleString();
+  const peakText = Number.isFinite(capture.peakDb)
+    ? `${capture.peakDb.toFixed(1)} dBFS`
+    : "--";
+  const durationText = Number.isFinite(capture.durationSeconds)
+    ? `${capture.durationSeconds.toFixed(1)} 秒`
+    : "--";
+
+  return `最近事件: ${timeText}，峰值 ${peakText}，时长 ${durationText}。`;
+}
+
+async function loadLatestCapture() {
+  elements.playLatestCapture.disabled = true;
+  elements.latestCaptureMeta.textContent = "正在读取最近录音事件...";
+
+  try {
+    const payload = await fetchJson("/api/captures/latest");
+    const latest = payload.latest;
+
+    if (!latest) {
+      elements.latestCaptureAudio.removeAttribute("src");
+      elements.latestCaptureAudio.load();
+      elements.playLatestCapture.disabled = true;
+      elements.latestCaptureMeta.textContent = "暂无可播放的 capture record。";
+      return;
+    }
+
+    elements.latestCaptureAudio.src = latest.audioUrl;
+    elements.latestCaptureMeta.textContent = formatCaptureMeta(latest);
+    elements.playLatestCapture.disabled = false;
+  } catch (error) {
+    elements.latestCaptureAudio.removeAttribute("src");
+    elements.latestCaptureAudio.load();
+    elements.playLatestCapture.disabled = true;
+    elements.latestCaptureMeta.textContent = `读取最近录音失败: ${error.message}`;
+  }
+}
+
+function renderHeatmapHours() {
+  const label = document.createElement("div");
+  label.className = "heatmap-label";
+  label.textContent = "日期";
+  elements.heatmapHours.replaceChildren(label);
+
+  for (const hour of HEATMAP_HOURS) {
+    const hourNode = document.createElement("div");
+    hourNode.className = "heatmap-hour";
+    hourNode.textContent = String(hour).padStart(2, "0");
+    elements.heatmapHours.appendChild(hourNode);
+  }
+}
+
+function getHeatColor(intensity) {
+  const clamped = Math.max(0, Math.min(1, intensity));
+  const alpha = 0.08 + clamped * 0.82;
+  return `rgba(212, 95, 49, ${alpha.toFixed(3)})`;
+}
+
+function renderHeatmap(days, maxCount) {
+  elements.heatmapBody.replaceChildren();
+
+  if (!Array.isArray(days) || days.length === 0) {
+    elements.heatmapSummary.textContent = `暂无超过 ${HEATMAP_THRESHOLD_DB} dBFS 的历史事件。`;
+    return;
+  }
+
+  for (const day of days) {
+    const row = document.createElement("div");
+    row.className = "heatmap-row";
+
+    const label = document.createElement("div");
+    label.className = "heatmap-label";
+    label.textContent = day.date;
+    row.appendChild(label);
+
+    for (const hour of HEATMAP_HOURS) {
+      const count = day.hours?.[hour] ?? 0;
+      const cell = document.createElement("div");
+      cell.className = "heatmap-cell";
+      const intensity = maxCount > 0 ? count / maxCount : 0;
+      cell.style.background = getHeatColor(intensity);
+      cell.title = `${day.date} ${String(hour).padStart(2, "0")}:00 - 次数: ${count}`;
+      row.appendChild(cell);
+    }
+
+    elements.heatmapBody.appendChild(row);
+  }
+
+  const totalEvents = days.reduce((sum, day) => sum + (day.total || 0), 0);
+  elements.heatmapSummary.textContent = `统计 ${days.length} 天，阈值 ${HEATMAP_THRESHOLD_DB} dBFS，总超阈值次数 ${totalEvents}，单小时最大 ${maxCount} 次。`;
+}
+
+async function refreshHeatmap() {
+  elements.refreshHeatmap.disabled = true;
+  elements.heatmapSummary.textContent = "正在生成热力图...";
+
+  try {
+    const payload = await fetchJson(
+      `/api/captures/heatmap?threshold=${HEATMAP_THRESHOLD_DB}`,
+    );
+    renderHeatmap(payload.days, payload.maxCount || 0);
+  } catch (error) {
+    elements.heatmapBody.replaceChildren();
+    elements.heatmapSummary.textContent = `热力图加载失败: ${error.message}`;
+  } finally {
+    elements.refreshHeatmap.disabled = false;
+  }
+}
+
 function applySnapshot(payload) {
   if (Number.isFinite(payload.timelineWindowSeconds)) {
     chartWindowSeconds = payload.timelineWindowSeconds;
@@ -288,6 +423,23 @@ function connectLiveStream() {
   });
 }
 
+function bindCaptureActions() {
+  elements.playLatestCapture.addEventListener("click", async () => {
+    try {
+      await loadLatestCapture();
+      if (elements.latestCaptureAudio.src) {
+        await elements.latestCaptureAudio.play();
+      }
+    } catch (error) {
+      elements.latestCaptureMeta.textContent = `播放失败: ${error.message}`;
+    }
+  });
+
+  elements.refreshHeatmap.addEventListener("click", () => {
+    refreshHeatmap();
+  });
+}
+
 window.addEventListener("resize", drawChart);
 window.addEventListener("beforeunload", () => {
   eventSource?.close();
@@ -309,4 +461,8 @@ updateLoudCaptureConfig({
   thresholdDb: null,
 });
 drawChart();
+renderHeatmapHours();
+bindCaptureActions();
+loadLatestCapture();
+refreshHeatmap();
 connectLiveStream();
