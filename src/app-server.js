@@ -9,6 +9,9 @@ const DEFAULT_STATS_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_TIMELINE_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_BROADCAST_INTERVAL_MS = 1000;
 const DEFAULT_SSE_HEARTBEAT_MS = 15000;
+const DEFAULT_LOUD_THRESHOLD_DB = -20;
+const DEFAULT_LOUD_CAPTURE_BUFFER_MS = 5000;
+const DEFAULT_LOUD_CAPTURE_SAMPLE_RATE = 44100;
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -28,6 +31,18 @@ function createDbMonitorApp(options = {}) {
   const broadcastIntervalMs =
     options.broadcastIntervalMs ?? DEFAULT_BROADCAST_INTERVAL_MS;
   const sampleSourceFactory = options.sampleSourceFactory || createMicSource;
+  const loudCaptureEnabled = options.loudCaptureEnabled ?? true;
+  const loudThresholdDb = Number.isFinite(options.loudThresholdDb)
+    ? Number(options.loudThresholdDb)
+    : DEFAULT_LOUD_THRESHOLD_DB;
+  const loudCaptureBufferMs = Number.isFinite(options.loudCaptureBufferMs)
+    ? Number(options.loudCaptureBufferMs)
+    : DEFAULT_LOUD_CAPTURE_BUFFER_MS;
+  const loudCaptureDir = path.resolve(
+    options.loudCaptureDir || path.join(__dirname, "..", "captures"),
+  );
+  const loudCaptureRecordingsDir = path.join(loudCaptureDir, "recordings");
+  const loudCaptureLogsDir = path.join(loudCaptureDir, "logs");
   const publicDir = path.resolve(
     options.publicDir || path.join(__dirname, "..", "public"),
   );
@@ -36,6 +51,9 @@ function createDbMonitorApp(options = {}) {
   const timelineReadings = [];
   const sseClients = new Set();
   const tcpClients = new Set();
+  const pcmBuffer = [];
+  const persistTasks = new Set();
+  let activeLoudEvent = null;
 
   let captureSource;
   let captureStatus = {
@@ -48,6 +66,174 @@ function createDbMonitorApp(options = {}) {
   let tcpServer;
   let broadcastTimer;
   let sseHeartbeatTimer;
+
+  function padInt(value, width) {
+    return String(value).padStart(width, "0");
+  }
+
+  function formatEventId(now = Date.now()) {
+    const date = new Date(now);
+    return [
+      `${date.getFullYear()}${padInt(date.getMonth() + 1, 2)}${padInt(date.getDate(), 2)}`,
+      "T",
+      `${padInt(date.getHours(), 2)}${padInt(date.getMinutes(), 2)}${padInt(date.getSeconds(), 2)}`,
+      "-",
+      padInt(date.getMilliseconds(), 3),
+    ].join("");
+  }
+
+  function createWavBuffer(pcmData, sampleRate) {
+    const dataSize = pcmData.length;
+    const header = Buffer.alloc(44);
+    const normalizedSampleRate =
+      Number.isFinite(sampleRate) && sampleRate > 0
+        ? Math.round(sampleRate)
+        : DEFAULT_LOUD_CAPTURE_SAMPLE_RATE;
+    const byteRate = normalizedSampleRate * 2;
+    const blockAlign = 2;
+
+    header.write("RIFF", 0, "ascii");
+    header.writeUInt32LE(36 + dataSize, 4);
+    header.write("WAVE", 8, "ascii");
+    header.write("fmt ", 12, "ascii");
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(normalizedSampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36, "ascii");
+    header.writeUInt32LE(dataSize, 40);
+
+    return Buffer.concat([header, pcmData]);
+  }
+
+  function trackPersistTask(taskPromise) {
+    persistTasks.add(taskPromise);
+    taskPromise.finally(() => {
+      persistTasks.delete(taskPromise);
+    });
+  }
+
+  function prunePcmBuffer(now = Date.now()) {
+    const cutoff = now - loudCaptureBufferMs;
+    while (pcmBuffer.length > 0 && pcmBuffer[0].timestamp < cutoff) {
+      pcmBuffer.shift();
+    }
+  }
+
+  function finalizeLoudEvent(event, endTimestamp) {
+    const eventEndTimestamp = Number.isFinite(endTimestamp)
+      ? endTimestamp
+      : Date.now();
+    const eventPayload = {
+      eventId: event.eventId,
+      highVolumeAt: new Date(event.triggeredAt).toISOString(),
+      thresholdDb: event.thresholdDb,
+      segmentStartAt: new Date(event.segmentStartAt).toISOString(),
+      segmentEndAt: new Date(eventEndTimestamp).toISOString(),
+      peakDb: event.peakDb,
+      triggeredAt: new Date(event.triggeredAt).toISOString(),
+      unit: "dBFS",
+    };
+    const recordingFile = `${event.eventId}.wav`;
+    const logFile = `${event.eventId}.json`;
+    eventPayload.recordingFile = recordingFile;
+    eventPayload.logFile = logFile;
+
+    const pcmData = event.chunks.length
+      ? Buffer.concat(event.chunks)
+      : Buffer.alloc(0);
+    const wavData = createWavBuffer(pcmData, event.sampleRate);
+
+    const task = (async () => {
+      await fs.promises.mkdir(loudCaptureRecordingsDir, { recursive: true });
+      await fs.promises.mkdir(loudCaptureLogsDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(loudCaptureRecordingsDir, recordingFile),
+        wavData,
+      );
+      await fs.promises.writeFile(
+        path.join(loudCaptureLogsDir, logFile),
+        `${JSON.stringify(eventPayload, null, 2)}\n`,
+        "utf8",
+      );
+    })();
+
+    task.catch((error) => {
+      console.error("Failed to persist loud capture event:", error);
+    });
+    trackPersistTask(task);
+  }
+
+  function handleLoudCapture(sample, timestamp) {
+    if (!loudCaptureEnabled) {
+      return;
+    }
+
+    const pcmChunk = Buffer.isBuffer(sample.pcm) ? Buffer.from(sample.pcm) : null;
+
+    prunePcmBuffer(timestamp);
+
+    if (pcmChunk) {
+      pcmBuffer.push({
+        pcm: pcmChunk,
+        timestamp,
+      });
+    }
+
+    if (!activeLoudEvent && sample.db >= loudThresholdDb) {
+      const eventId = formatEventId(Date.now());
+      const preRollChunks = pcmBuffer
+        .filter(
+          (chunk) =>
+            chunk.timestamp >= timestamp - loudCaptureBufferMs &&
+            chunk.timestamp < timestamp,
+        )
+        .map((chunk) => chunk.pcm);
+
+      activeLoudEvent = {
+        chunks: [...preRollChunks],
+        eventId,
+        lastAboveThresholdAt: timestamp,
+        peakDb: sample.db,
+        sampleRate:
+          Number.isFinite(sample.sampleRate) && sample.sampleRate > 0
+            ? Math.round(sample.sampleRate)
+            : DEFAULT_LOUD_CAPTURE_SAMPLE_RATE,
+        segmentStartAt:
+          preRollChunks.length > 0
+            ? Math.max(0, timestamp - loudCaptureBufferMs)
+            : timestamp,
+        thresholdDb: loudThresholdDb,
+        triggeredAt: timestamp,
+      };
+    }
+
+    if (!activeLoudEvent) {
+      return;
+    }
+
+    if (pcmChunk) {
+      activeLoudEvent.chunks.push(pcmChunk);
+    }
+
+    if (sample.db >= loudThresholdDb) {
+      activeLoudEvent.lastAboveThresholdAt = timestamp;
+      activeLoudEvent.peakDb = Math.max(activeLoudEvent.peakDb, sample.db);
+      return;
+    }
+
+    if (
+      timestamp - activeLoudEvent.lastAboveThresholdAt >=
+      loudCaptureBufferMs
+    ) {
+      const completedEvent = activeLoudEvent;
+      activeLoudEvent = null;
+      finalizeLoudEvent(completedEvent, timestamp);
+    }
+  }
 
   function json(response, statusCode, payload) {
     response.writeHead(statusCode, {
@@ -135,10 +321,21 @@ function createDbMonitorApp(options = {}) {
 
   function getLiveStatusPayload() {
     return {
+      loudCapture: getLoudCapturePayload(),
       stats: getStats(),
       status: captureStatus,
       timelineWindowSeconds: Math.round(timelineWindowMs / 1000),
       unit: "dBFS",
+    };
+  }
+
+  function getLoudCapturePayload() {
+    return {
+      bufferSeconds: Math.round(loudCaptureBufferMs / 1000),
+      enabled: loudCaptureEnabled,
+      logsDir: loudCaptureLogsDir,
+      recordingsDir: loudCaptureRecordingsDir,
+      thresholdDb: loudThresholdDb,
     };
   }
 
@@ -200,8 +397,10 @@ function createDbMonitorApp(options = {}) {
 
   function handleCaptureSample(sample) {
     const timestamp = sample.timestamp ?? Date.now();
+    handleLoudCapture(sample, timestamp);
     const stats = addReading(sample.db, timestamp);
     const payload = {
+      loudCapture: getLoudCapturePayload(),
       sample: {
         db: sample.db,
         timestamp,
@@ -249,6 +448,7 @@ function createDbMonitorApp(options = {}) {
   async function handleApi(request, response) {
     if (request.method === "GET" && request.url === "/api/stats") {
       json(response, 200, {
+        loudCapture: getLoudCapturePayload(),
         ok: true,
         stats: getStats(),
         status: captureStatus,
@@ -269,6 +469,7 @@ function createDbMonitorApp(options = {}) {
 
       writeSseEvent(response, "status", getLiveStatusPayload());
       writeSseEvent(response, "snapshot", {
+        loudCapture: getLoudCapturePayload(),
         stats: getStats(),
         status: captureStatus,
         timeline: getTimeline(),
@@ -432,6 +633,16 @@ function createDbMonitorApp(options = {}) {
     if (captureSource?.stop) {
       await captureSource.stop();
       captureSource = undefined;
+    }
+
+    if (activeLoudEvent) {
+      const completedEvent = activeLoudEvent;
+      activeLoudEvent = null;
+      finalizeLoudEvent(completedEvent, Date.now());
+    }
+
+    if (persistTasks.size > 0) {
+      await Promise.allSettled([...persistTasks]);
     }
 
     for (const client of tcpClients) {

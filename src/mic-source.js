@@ -104,6 +104,7 @@ function createMicSource({ onSample, onStatus }) {
   let audioInput;
   let stopped = false;
   const toTimestampMs = createTimestampMapper();
+  let sampleRate = 44100;
 
   function emitStatus(status) {
     onStatus?.({
@@ -139,6 +140,7 @@ function createMicSource({ onSample, onStatus }) {
         sampleRate: Number(inputDevice.defaultSampleRate) || 44100,
       },
     });
+    sampleRate = Number(inputDevice.defaultSampleRate) || 44100;
 
     audioInput.on("data", (buffer) => {
       if (stopped) {
@@ -148,7 +150,12 @@ function createMicSource({ onSample, onStatus }) {
       const timestamp = toTimestampMs(buffer);
       const db = computeDbfsFrom16Bit(buffer);
 
-      onSample?.({ db, timestamp });
+      onSample?.({
+        db,
+        pcm: Buffer.from(buffer),
+        sampleRate,
+        timestamp,
+      });
     });
 
     audioInput.on("error", (error) => {

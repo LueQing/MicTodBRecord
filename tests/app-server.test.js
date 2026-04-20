@@ -1,7 +1,10 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs/promises");
 const http = require("http");
 const net = require("net");
+const os = require("os");
+const path = require("path");
 
 const { createDbMonitorApp } = require("../src/app-server");
 
@@ -51,8 +54,8 @@ function createFakeSampleSourceFactory() {
   let onStatus;
 
   return {
-    emitSample(db, timestamp = Date.now()) {
-      onSample?.({ db, timestamp });
+    emitSample(db, timestamp = Date.now(), extras = {}) {
+      onSample?.({ db, timestamp, ...extras });
     },
     emitStatus(status) {
       onStatus?.(status);
@@ -207,6 +210,7 @@ async function main() {
   const app = createDbMonitorApp({
     broadcastIntervalMs: 40,
     httpPort: 0,
+    loudCaptureEnabled: false,
     sampleSourceFactory: fakeSampleSource.factory,
     tcpPort: 0,
     timelineWindowMs: 1000,
@@ -248,6 +252,8 @@ async function main() {
   assert.equal(initialStats.statusCode, 200);
   assert.equal(initialStats.body.stats.readingCount, 0);
   assert.equal(initialStats.body.status.state, "live");
+  assert.equal(initialStats.body.loudCapture.enabled, false);
+  assert.equal(initialStats.body.loudCapture.thresholdDb, -20);
 
   const rootPage = await new Promise((resolve, reject) => {
     http
@@ -286,6 +292,7 @@ async function main() {
   assert.equal(snapshot.data.status.state, "live");
   assert.equal(Array.isArray(snapshot.data.timeline), true);
   assert.equal(snapshot.data.timelineWindowSeconds, 1);
+  assert.equal(snapshot.data.loudCapture.enabled, false);
 
   fakeSampleSource.emitSample(-30);
   fakeSampleSource.emitSample(-10);
@@ -298,6 +305,7 @@ async function main() {
   assert.equal(sampleEvent.data.stats.maxDb, -10);
   assert.equal(sampleEvent.data.stats.avgDb, -20);
   assert.equal(sampleEvent.data.timelineWindowSeconds, 1);
+  assert.equal(sampleEvent.data.loudCapture.enabled, false);
 
   const activeStats = await httpRequest({
     path: "/api/stats",
@@ -339,7 +347,80 @@ async function main() {
   client.destroy();
   await app.stop();
 
+  await testLoudCapturePersistence();
+
   console.log("Smoke test passed.");
+}
+
+async function testLoudCapturePersistence() {
+  const fakeSampleSource = createFakeSampleSourceFactory();
+  const tmpRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "mic-db-record-loud-capture-"),
+  );
+  const app = createDbMonitorApp({
+    broadcastIntervalMs: 40,
+    httpPort: 0,
+    loudCaptureBufferMs: 50,
+    loudCaptureDir: tmpRoot,
+    loudCaptureEnabled: true,
+    loudThresholdDb: -20,
+    sampleSourceFactory: fakeSampleSource.factory,
+    tcpPort: 0,
+    timelineWindowMs: 1000,
+    windowMs: 200,
+  });
+
+  try {
+    await app.start();
+
+    const t0 = Date.now();
+    const pcmChunk = Buffer.alloc(800, 0x7f);
+
+    fakeSampleSource.emitSample(-45, t0, { pcm: pcmChunk, sampleRate: 16000 });
+    fakeSampleSource.emitSample(-10, t0 + 10, {
+      pcm: pcmChunk,
+      sampleRate: 16000,
+    });
+    fakeSampleSource.emitSample(-12, t0 + 20, {
+      pcm: pcmChunk,
+      sampleRate: 16000,
+    });
+    fakeSampleSource.emitSample(-40, t0 + 80, {
+      pcm: pcmChunk,
+      sampleRate: 16000,
+    });
+
+    await wait(80);
+    await app.stop();
+
+    const recordingsDir = path.join(tmpRoot, "recordings");
+    const logsDir = path.join(tmpRoot, "logs");
+    const recordings = await fs.readdir(recordingsDir);
+    const logs = await fs.readdir(logsDir);
+
+    assert.equal(recordings.length, 1);
+    assert.equal(logs.length, 1);
+    assert.match(recordings[0], /\.wav$/);
+    assert.match(logs[0], /\.json$/);
+    assert.match(recordings[0], /^\d{8}T\d{6}-\d{3}\.wav$/);
+
+    const logPath = path.join(logsDir, logs[0]);
+    const recordingPath = path.join(recordingsDir, recordings[0]);
+    const logPayload = JSON.parse(await fs.readFile(logPath, "utf8"));
+    const recordingStat = await fs.stat(recordingPath);
+
+    assert.equal(logPayload.thresholdDb, -20);
+    assert.equal(logPayload.unit, "dBFS");
+    assert.equal(typeof logPayload.highVolumeAt, "string");
+    assert.equal(logPayload.recordingFile, recordings[0]);
+    assert.equal(logPayload.logFile, logs[0]);
+    assert.ok(logPayload.peakDb >= -12);
+    assert.ok(recordingStat.size > 44);
+    assert.equal(logPayload.recordingFile.endsWith(".wav"), true);
+  } finally {
+    await app.stop().catch(() => {});
+    await fs.rm(tmpRoot, { force: true, recursive: true });
+  }
 }
 
 main().catch((error) => {

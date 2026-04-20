@@ -5,6 +5,10 @@ const MAX_DB = 0;
 
 const elements = {
   avgDb: document.getElementById("avgDb"),
+  captureBuffer: document.getElementById("captureBuffer"),
+  captureEnabled: document.getElementById("captureEnabled"),
+  captureOutputDir: document.getElementById("captureOutputDir"),
+  captureThreshold: document.getElementById("captureThreshold"),
   chart: document.getElementById("chart"),
   currentDb: document.getElementById("currentDb"),
   maxDb: document.getElementById("maxDb"),
@@ -92,6 +96,19 @@ function updateStats(stats) {
     stats?.readingCount > 0
       ? `服务端更新时间 ${new Date(stats.updatedAt).toLocaleTimeString()}`
       : "等待后端样本";
+}
+
+function updateLoudCaptureConfig(config) {
+  elements.captureEnabled.textContent = config?.enabled ? "已启用" : "已禁用";
+  elements.captureThreshold.textContent = Number.isFinite(config?.thresholdDb)
+    ? `${config.thresholdDb} dBFS`
+    : "--";
+  elements.captureBuffer.textContent = Number.isFinite(config?.bufferSeconds)
+    ? `${config.bufferSeconds} 秒`
+    : "--";
+  elements.captureOutputDir.textContent = config?.recordingsDir
+    ? config.recordingsDir
+    : "--";
 }
 
 function syncCanvasSize() {
@@ -208,6 +225,7 @@ function applySnapshot(payload) {
   }));
   pruneTimeline();
   updateStats(payload.stats || {});
+  updateLoudCaptureConfig(payload.loudCapture || {});
   updateCaptureStatus(payload.status);
   drawChart();
 }
@@ -226,6 +244,7 @@ function applySample(payload) {
 
   pruneTimeline();
   updateStats(payload.stats || {});
+  updateLoudCaptureConfig(payload.loudCapture || {});
   updateCaptureStatus(payload.status);
   drawChart();
 }
@@ -253,6 +272,7 @@ function connectLiveStream() {
   eventSource.addEventListener("status", (event) => {
     const payload = JSON.parse(event.data);
     updateStats(payload.stats || {});
+    updateLoudCaptureConfig(payload.loudCapture || {});
     updateCaptureStatus(payload.status);
     drawChart();
   });
@@ -281,6 +301,12 @@ updateStats({
   maxDb: null,
   readingCount: 0,
   updatedAt: new Date().toISOString(),
+});
+updateLoudCaptureConfig({
+  bufferSeconds: null,
+  enabled: false,
+  recordingsDir: null,
+  thresholdDb: null,
 });
 drawChart();
 connectLiveStream();
